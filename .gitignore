@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# ملفات الاختبار
+*.docx
+!screenshots/*.docx
+*.log
+
+# إعدادات المحررات
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Windows
+desktop.ini
