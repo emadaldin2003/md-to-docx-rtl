@@ -8,29 +8,14 @@ Instagram: https://www.instagram.com/e.4_m
 
 Licensed under the MIT License.
 See LICENSE file for details.
-
-الوضعان:
---------
-- python md_to_docx_rtl.py                     → واجهة GUI
-- python md_to_docx_rtl.py "file.md"           → تحويل مباشر
-- python md_to_docx_rtl.py "file.md" "out.docx" → تحويل مع تحديد الإخراج
-
-الميزات:
---------
-- RTL/LTR صحيح مع إصلاح الأقواس
-- جداول بتصميم Zebra + رأس أزرق داكن
-- اقتباسات بشريط جانبي أزرق
-- أكواد بإطار ناعم + inline code ملون
-- عناوين ملونة + خط سفلي لـ H1/H2
-- ترقيم صفحات في التذييل
-- فهرس تلقائي عند وجود "المحتويات"/"الفهرس"
-- حفظ آمن (اسم بديل عند فشل الكتابة)
-- واجهة GUI عربية بسيطة
 """
 
 import os
 import re
 import sys
+import traceback
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Union
 
@@ -65,7 +50,6 @@ TABLE_FONT_SIZES = {
     1: 15, 2: 14, 3: 13, 4: 13,
     5: 12, 6: 11, 7: 10, 8: 10,
 }
-
 
 # ============================================================
 # لوحة الألوان
@@ -168,12 +152,6 @@ def tcpr_add(tc_pr, tag_name):
 # ============================================================
 
 def set_run_size(run, size_pt):
-    """
-    ضبط w:sz (للنص العادي) و w:szCs (للنص العربي).
-
-    Word يستخدم w:szCs للعربية، وإذا لم يُضبط يستعمل حجماً
-    افتراضياً (~11pt) بغض النظر عن w:sz.
-    """
     r_pr = run._r.get_or_add_rPr()
     half_points = str(int(round(size_pt * 2)))
 
@@ -1094,11 +1072,8 @@ def save_document_safely(document, output_path):
         document.save(str(output_path))
         return output_path
     except (PermissionError, OSError) as e:
-        print()
-        print(f"⚠️  تعذّر الكتابة فوق: {output_path.name}")
-        print(f"   السبب: {e}")
+        print(f"⚠️  تعذّر الكتابة فوق: {output_path.name} - {e}")
         print("   سيتم استخدام اسم بديل...")
-        print()
 
     stem, suffix, parent = output_path.stem, output_path.suffix, output_path.parent
     for i in range(1, 100):
@@ -1106,7 +1081,6 @@ def save_document_safely(document, output_path):
         try:
             document.save(str(candidate))
             print(f"✅ تم الحفظ باسم بديل: {candidate.name}")
-            print()
             return candidate
         except (PermissionError, OSError):
             continue
@@ -1123,7 +1097,15 @@ def convert_md_to_docx(input_file, output_file):
     if not input_path.exists():
         raise FileNotFoundError(f"الملف غير موجود:\n{input_path}")
 
-    md_text = input_path.read_text(encoding="utf-8")
+    # دعم الترميزات المختلفة بأمان
+    try:
+        md_text = input_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        try:
+            md_text = input_path.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            md_text = input_path.read_text(encoding="cp1256", errors="replace")
+
     md_text = preprocess_markdown(md_text)
     html = markdown_to_html(md_text)
     soup = BeautifulSoup(html, "html.parser")
@@ -1174,10 +1156,6 @@ def convert_md_to_docx(input_file, output_file):
 # ============================================================
 
 def run_gui():
-    """
-    تشغيل الواجهة الرسومية.
-    تُستدعى عندما لا توجد وسائط سطر أوامر.
-    """
     import threading
     import queue
     import tkinter as tk
@@ -1188,14 +1166,20 @@ def run_gui():
         "out_path": None,
         "last_output": None,
     }
-    # ---------------------------------------------------------
-    # النافذة
-    # ---------------------------------------------------------
 
     root = tk.Tk()
     root.title("محول Markdown إلى Word")
-    root.geometry("760x480")
-    root.minsize(660, 440)
+    root.geometry("760x520")
+    root.minsize(660, 460)
+
+    # تحميل الأيقونة من الـ EXE أو المجلد
+    try:
+        base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        icon_path = os.path.join(base_path, 'app.ico')
+        if os.path.exists(icon_path):
+            root.iconbitmap(icon_path)
+    except Exception:
+        pass
 
     try:
         default_font = ("Segoe UI", 11)
@@ -1213,130 +1197,56 @@ def run_gui():
 
     style.configure("TFrame", background="#F7FAFC")
     style.configure("TLabel", background="#F7FAFC", foreground="#1A202C")
-    style.configure("Title.TLabel",
-                    font=("Segoe UI", 18, "bold"),
-                    foreground="#1A365D",
-                    background="#F7FAFC")
-    style.configure("Sub.TLabel",
-                    font=("Segoe UI", 10),
-                    foreground="#4A5568",
-                    background="#F7FAFC")
-    style.configure("Status.TLabel",
-                    font=("Segoe UI", 11, "bold"),
-                    foreground="#2C5282",
-                    background="#F7FAFC")
-    style.configure("Primary.TButton",
-                    font=("Segoe UI", 12, "bold"),
-                    foreground="white",
-                    background="#2C5282")
-    style.map("Primary.TButton",
-              background=[("active", "#2B6CB0"),
-                          ("disabled", "#A0AEC0")])
-
-    # ---------------------------------------------------------
-    # التخطيط
-    # ---------------------------------------------------------
+    style.configure("Title.TLabel", font=("Segoe UI", 18, "bold"), foreground="#1A365D", background="#F7FAFC")
+    style.configure("Sub.TLabel", font=("Segoe UI", 10), foreground="#4A5568", background="#F7FAFC")
+    style.configure("Status.TLabel", font=("Segoe UI", 11, "bold"), foreground="#2C5282", background="#F7FAFC")
+    style.configure("Primary.TButton", font=("Segoe UI", 12, "bold"), foreground="white", background="#2C5282")
+    style.map("Primary.TButton", background=[("active", "#2B6CB0"), ("disabled", "#A0AEC0")])
 
     main_frame = ttk.Frame(root, padding=24)
     main_frame.pack(fill="both", expand=True)
 
-    ttk.Label(
-        main_frame,
-        text="محول Markdown إلى Word",
-        style="Title.TLabel",
-        anchor="e",
-        justify="right",
-    ).pack(fill="x", pady=(0, 6))
-
-    ttk.Label(
-        main_frame,
-        text="تحويل ملفات Markdown إلى Word مع الحفاظ على التنسيق واتجاه النص.",
-        style="Sub.TLabel",
-        anchor="e",
-        justify="right",
-    ).pack(fill="x", pady=(0, 20))
-
+    ttk.Label(main_frame, text="محول Markdown إلى Word", style="Title.TLabel", anchor="e", justify="right").pack(fill="x", pady=(0, 6))
+    ttk.Label(main_frame, text="تحويل ملفات Markdown إلى Word مع الحفاظ على التنسيق واتجاه النص.", style="Sub.TLabel", anchor="e", justify="right").pack(fill="x", pady=(0, 20))
     ttk.Separator(main_frame, orient="horizontal").pack(fill="x", pady=(0, 20))
 
-    # صف اختيار الملف
     file_frame = ttk.Frame(main_frame)
     file_frame.pack(fill="x", pady=(0, 12))
-
-    ttk.Label(
-        file_frame,
-        text="ملف Markdown:",
-        anchor="e",
-    ).pack(side="right", padx=(0, 8))
-
+    ttk.Label(file_frame, text="ملف Markdown:", anchor="e").pack(side="right", padx=(0, 8))
     entry_path = ttk.Entry(file_frame, font=("Segoe UI", 10))
     entry_path.pack(side="right", fill="x", expand=True, padx=(0, 8))
 
-    # صف أزرار التصفح
     browse_frame = ttk.Frame(main_frame)
     browse_frame.pack(fill="x", pady=(0, 16))
-
     browse_btn = ttk.Button(browse_frame, text="تصفح...")
     browse_btn.pack(side="right", padx=(0, 8))
-
     out_btn = ttk.Button(browse_frame, text="مكان الحفظ...")
     out_btn.pack(side="right")
 
-    # زر التحويل
-    convert_btn = ttk.Button(
-        main_frame,
-        text="تحويل إلى Word",
-        style="Primary.TButton",
-    )
+    convert_btn = ttk.Button(main_frame, text="تحويل إلى Word", style="Primary.TButton")
     convert_btn.pack(fill="x", pady=(4, 16), ipady=8)
 
-    # الحالة
     status_frame = ttk.Frame(main_frame)
     status_frame.pack(fill="x", pady=(0, 16))
-
     ttk.Label(status_frame, text="الحالة:", anchor="e").pack(side="right", padx=(0, 8))
-
-    status_label = ttk.Label(
-        status_frame,
-        text="جاهز",
-        style="Status.TLabel",
-        anchor="e",
-    )
+    status_label = ttk.Label(status_frame, text="جاهز", style="Status.TLabel", anchor="e")
     status_label.pack(side="right", fill="x", expand=True)
 
-    # زر فتح الملف
     open_btn = ttk.Button(main_frame, text="فتح الملف")
     open_btn.pack(fill="x", ipady=6)
     open_btn.state(["disabled"])
-
-    # ---------------------------------------------------------
-    # دوال مساعدة
-    # ---------------------------------------------------------
 
     def set_status(text, color="#2C5282"):
         status_label.configure(text=text, foreground=color)
 
     def browse_file():
-        chosen = filedialog.askopenfilename(
-            title="اختر ملف Markdown",
-            filetypes=[
-                ("ملفات Markdown", "*.md"),
-                ("ملفات نصية", "*.markdown *.txt"),
-                ("كل الملفات", "*.*"),
-            ],
-        )
+        chosen = filedialog.askopenfilename(title="اختر ملف Markdown", filetypes=[("ملفات Markdown", "*.md"), ("ملفات نصية", "*.markdown *.txt"), ("كل الملفات", "*.*")])
         if not chosen:
             return
-
         p = Path(chosen)
         if p.suffix.lower() not in (".md", ".markdown", ".txt"):
-            ans = messagebox.askyesno(
-                "تنبيه",
-                "الملف المختار ليس ملف Markdown بامتداد .md\n"
-                "هل تريد المتابعة على أي حال؟",
-            )
-            if not ans:
+            if not messagebox.askyesno("تنبيه", "الملف المختار ليس ملف Markdown بامتداد .md\nهل تريد المتابعة على أي حال؟"):
                 return
-
         state["md_path"] = str(p)
         entry_path.delete(0, "end")
         entry_path.insert(0, str(p))
@@ -1349,13 +1259,7 @@ def run_gui():
             messagebox.showwarning("تنبيه", "اختر ملف Markdown أولًا.")
             return
         base = Path(state["md_path"]).with_suffix(".docx")
-        chosen = filedialog.asksaveasfilename(
-            title="اختر مكان الحفظ",
-            defaultextension=".docx",
-            initialfile=base.name,
-            initialdir=str(base.parent),
-            filetypes=[("ملفات Word", "*.docx")],
-        )
+        chosen = filedialog.asksaveasfilename(title="اختر مكان الحفظ", defaultextension=".docx", initialfile=base.name, initialdir=str(base.parent), filetypes=[("ملفات Word", "*.docx")])
         if chosen:
             state["out_path"] = chosen
             set_status(f"سيُحفظ باسم: {Path(chosen).name}")
@@ -1374,37 +1278,25 @@ def run_gui():
         except Exception as e:
             messagebox.showerror("خطأ", f"تعذّر فتح الملف:\n{e}")
 
-    # ---------------------------------------------------------
-    # التحويل في Thread
-    # ---------------------------------------------------------
-
     def conversion_worker(md_path, out_path, q):
         try:
             actual = convert_md_to_docx(md_path, out_path)
             q.put(("ok", str(actual)))
         except Exception as e:
-            q.put(("error", str(e)))
+            q.put(("error", str(e), traceback.format_exc()))
 
     def do_convert():
         md = state["md_path"] or entry_path.get().strip()
-
         if not md:
             messagebox.showwarning("تنبيه", "الرجاء اختيار ملف Markdown أولًا.")
             return
-
         md_path = Path(md)
         if not md_path.exists():
             messagebox.showerror("خطأ", f"الملف غير موجود:\n{md_path}")
             return
-
         if md_path.suffix.lower() not in (".md", ".markdown", ".txt"):
-            ans = messagebox.askyesno(
-                "تنبيه",
-                "الملف ليس بامتداد .md\nهل تريد المتابعة؟",
-            )
-            if not ans:
+            if not messagebox.askyesno("تنبيه", "الملف ليس بامتداد .md\nهل تريد المتابعة؟"):
                 return
-
         try:
             if md_path.stat().st_size == 0:
                 messagebox.showwarning("تنبيه", "الملف فارغ.")
@@ -1413,22 +1305,12 @@ def run_gui():
             messagebox.showerror("خطأ", f"لا يمكن قراءة الملف:\n{e}")
             return
 
-        out_path = state["out_path"]
-        if not out_path:
-            out_path = str(md_path.with_suffix(".docx"))
-
+        out_path = state["out_path"] or str(md_path.with_suffix(".docx"))
         out_p = Path(out_path)
+        
         if out_p.exists():
-            ans = messagebox.askyesno(
-                "الملف موجود",
-                f"الملف التالي موجود بالفعل:\n{out_p.name}\n\nهل تريد استبداله؟",
-            )
-            if not ans:
-                new_name = simpledialog.askstring(
-                    "اسم بديل",
-                    "اكتب اسم ملف جديد (بدون .docx):",
-                    initialvalue=out_p.stem + " - نسخة",
-                )
+            if not messagebox.askyesno("الملف موجود", f"الملف التالي موجود بالفعل:\n{out_p.name}\n\nهل تريد استبداله؟"):
+                new_name = simpledialog.askstring("اسم بديل", "اكتب اسم ملف جديد (بدون .docx):", initialvalue=out_p.stem + " - نسخة")
                 if not new_name:
                     return
                 out_path = str(out_p.with_name(new_name + ".docx"))
@@ -1436,11 +1318,7 @@ def run_gui():
                 out_p = Path(out_path)
 
         if out_p.exists() and not is_file_writable(out_p):
-            messagebox.showinfo(
-                "ملاحظة",
-                "الملف الناتج مفتوح في برنامج آخر.\n"
-                "سيتم إنشاء ملف باسم بديل تلقائيًا.",
-            )
+            messagebox.showinfo("ملاحظة", "الملف الناتج مفتوح في برنامج آخر.\nسيتم إنشاء ملف باسم بديل تلقائيًا.")
 
         convert_btn.state(["disabled"])
         browse_btn.state(["disabled"])
@@ -1449,16 +1327,12 @@ def run_gui():
         set_status("جاري التحويل...", color="#DD6B20")
 
         q = queue.Queue()
-        t = threading.Thread(
-            target=conversion_worker,
-            args=(str(md_path), out_path, q),
-            daemon=True,
-        )
+        t = threading.Thread(target=conversion_worker, args=(str(md_path), out_path, q), daemon=True)
         t.start()
 
         def poll():
             try:
-                kind, payload = q.get_nowait()
+                result = q.get_nowait()
             except queue.Empty:
                 root.after(150, poll)
                 return
@@ -1467,50 +1341,64 @@ def run_gui():
             browse_btn.state(["!disabled"])
             out_btn.state(["!disabled"])
 
-            if kind == "ok":
+            if result[0] == "ok":
+                payload = result[1]
                 state["last_output"] = payload
                 state["out_path"] = payload
                 set_status(f"تم التحويل بنجاح: {Path(payload).name}", color="#2F855A")
                 open_btn.state(["!disabled"])
-                messagebox.showinfo(
-                    "نجاح",
-                    f"تم التحويل بنجاح.\n\nالملف الناتج:\n{payload}",
-                )
+                messagebox.showinfo("نجاح", f"تم التحويل بنجاح.\n\nالملف الناتج:\n{payload}")
             else:
+                err_msg = result[1]
+                trace = result[2]
                 set_status("فشل التحويل", color="#C53030")
-                messagebox.showerror(
-                    "خطأ أثناء التحويل",
-                    f"تعذّر إتمام التحويل:\n\n{payload}",
-                )
+                
+                # حفظ الخطأ في ملف log
+                try:
+                    with open("error.log", "w", encoding="utf-8") as f:
+                        f.write(trace)
+                except Exception:
+                    pass
+                    
+                messagebox.showerror("خطأ أثناء التحويل", f"تعذّر إتمام التحويل:\n\n{err_msg}\n\nتم حفظ تفاصيل الخطأ في ملف error.log")
 
         root.after(150, poll)
 
-    # ربط الأزرار
     browse_btn.configure(command=browse_file)
     out_btn.configure(command=browse_output)
     convert_btn.configure(command=do_convert)
     open_btn.configure(command=open_result)
-
     root.bind("<Return>", lambda e: do_convert())
-    
-        # حقوق النشر في الأسفل (خارج main_frame)
-    footer_label = ttk.Label(
-        root,              # ← child of root مباشرة
-        text="© 2025 عمادالدين الاديمي — MIT License",
-        style="Sub.TLabel",
-        anchor="center",
-    )
+
+    # زر الحقوق
+    footer_label = ttk.Label(root, text="© 2025 عمادالدين الاديمي — MIT License", style="Sub.TLabel", anchor="center")
     footer_label.pack(fill="x", side="bottom", pady=(0, 8))
 
+    # إغلاق آمن ومحاولة حذف مجلد _MEI العالق
+    def on_closing():
+        try:
+            if getattr(sys, 'frozen', False):
+                base_temp = tempfile.gettempdir()
+                for d in os.listdir(base_temp):
+                    if d.startswith("_MEI"):
+                        try:
+                            shutil.rmtree(os.path.join(base_temp, d), ignore_errors=True)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        root.destroy()
+        sys.exit(0)
+
+    root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
 
 
 # ============================================================
-# Main
+# Main & Entry Point
 # ============================================================
 
 def main():
-    # وضع GUI: لا توجد وسائط
     if len(sys.argv) < 2:
         try:
             run_gui()
@@ -1522,41 +1410,18 @@ def main():
                 print(f"حدث خطأ: {e}", file=sys.stderr)
         return
 
-    # وضع CLI
     input_file = sys.argv[1]
     output_file = sys.argv[2] if len(sys.argv) >= 3 else str(Path(input_file).with_suffix(".docx"))
 
     if not is_file_writable(Path(output_file)):
-        print()
-        print("⚠️  تحذير مبكّر:")
-        print(f"   الملف '{output_file}' مفتوح في برنامج آخر.")
-        print("   سيتم إنشاء ملف باسم بديل عند الحفظ.")
-        print()
+        print(f"⚠️  تحذير مبكّر: الملف '{output_file}' مفتوح في برنامج آخر. سيتم إنشاء ملف باسم بديل عند الحفظ.")
 
     try:
-        print()
-        print("جاري تحويل الملف...")
-        print()
         actual_path = convert_md_to_docx(input_file, output_file)
-        print()
-        print("تم التحويل بنجاح.")
-        print()
-        print("الملف الناتج:")
-        print(Path(actual_path).resolve())
-        print()
+        print(f"تم التحويل بنجاح.\nالملف الناتج:\n{Path(actual_path).resolve()}")
     except Exception as error:
-        print()
-        print("حدث خطأ أثناء التحويل:")
-        print()
-        print(error)
-        print()
-        import traceback
+        print(f"حدث خطأ أثناء التحويل:\n{error}")
         traceback.print_exc()
-
-
-# ============================================================
-# Program entry point
-# ============================================================
 
 if __name__ == "__main__":
     main()
